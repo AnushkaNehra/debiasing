@@ -1,0 +1,70 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+with open("CAL/data/HANS_sampled/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+def make_prompt(premise, hypothesis):
+    return f"[INST] Given a premise and hypothesis, determine whether the hypothesis logically follows from the premise. Reply with only one word: entailment or non_entailment.\nPremise: {premise}\nHypothesis: {hypothesis} [/INST]"
+
+correct = 0
+total = 0
+skipped = 0
+
+for i, example in enumerate(tqdm(lines)):
+    try:
+        content = example["content"]
+        if "Premise:" in content and "Hypothesis:" in content:
+            premise_part, hypothesis_part = content.split("Hypothesis:", 1)
+            premise = premise_part.replace("Premise:", "").strip()
+            hypothesis = hypothesis_part.strip()
+        else:
+            skipped += 1
+            continue
+
+        label = example["label"]
+        true_label = label.strip().lower() if isinstance(label, str) else ("entailment" if label == 1 else "non_entailment")
+
+        prompt = make_prompt(premise, hypothesis)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(device)
+
+        with torch.no_grad():
+            output = model.generate(**inputs, max_new_tokens=10)
+            decoded = tokenizer.decode(output[0], skip_special_tokens=True).lower()
+            response = decoded[len(prompt):].strip().split()[0]
+
+        if "non_entailment" in response or "non" in response:
+            pred = "non_entailment"
+        elif "entailment" in response:
+            pred = "entailment"
+        else:
+            pred = "unknown"
+
+        if pred == true_label:
+            correct += 1
+        if pred in ["entailment", "non_entailment"]:
+            total += 1
+
+        print(f"\n[{i}] Prediction: {pred} | True: {true_label}")
+        print(f"Raw Output: {decoded}")
+
+    except Exception as e:
+        print(f"Error at index {i}: {e}")
+        skipped += 1
+        continue
+
+accuracy = correct / total if total > 0 else 0
+print(f"\nZS-known Accuracy on HANS ({total} matched): {accuracy:.2%}")
+print(f"Skipped: {skipped} examples")
