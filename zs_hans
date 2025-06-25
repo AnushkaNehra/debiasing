@@ -1,0 +1,142 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import sys
+import re
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+os.makedirs("outputs", exist_ok=True)
+json_filename = f"outputs/results_zs_hans_{timestamp}.json"
+log_filename = f"outputs/log_zs_hans_{timestamp}.txt"
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj); f.flush()
+    def flush(self):
+        for f in self.files: f.flush()
+
+log_f = open(log_filename, "w")
+sys.stdout = Tee(sys.stdout, log_f)
+
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"  # or your local path
+tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+tokenizer.padding_side = "left"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+print("Model and tokenizer loaded.\n")
+
+
+with open("CAL/data/HANS_sampled/sampled.jsonl") as f:
+    data = [json.loads(line) for line in f]
+
+def make_prompt(premise, hypothesis):
+    return (
+        "You are a Natural Language Inference (NLI) system.\n"
+        "Given a premise and a hypothesis, determine whether the hypothesis logically follows from the premise.\n"
+        "Respond with only one word: 'entailment' or 'non_entailment'.\n\n"
+        f"Premise: {premise}\nHypothesis: {hypothesis}\nAnswer:"
+    )
+
+
+LABEL_MAP = {
+    0: "entailment",
+    2: "non_entailment"
+    
+}
+
+
+def extract_label(output):
+    output = output.lower()
+    match = re.search(r"answer[:\s]*([a-z_\- ]+)", output)
+    label_raw = match.group(1).strip() if match else output.strip().split()[-1]
+
+    label_raw = label_raw.replace("-", "_").replace(" ", "_")
+    if "non_entailment" in label_raw or "not_entailed" in label_raw:
+        return "non_entailment"
+    elif "entailment" in label_raw:
+        return "entailment"
+    else:
+        return "unknown"
+
+results = []
+correct = total = skipped = 0
+
+for i, ex in enumerate(tqdm(data)):
+    try:
+        content = ex["content"]
+        label_num = ex["label"]
+        if label_num not in LABEL_MAP:
+            skipped += 1
+            continue
+
+        true_label = LABEL_MAP[label_num]
+
+        if "Premise:" in content and "Hypothesis:" in content:
+            premise = content.split("Premise:")[1].split("Hypothesis:")[0].strip()
+            hypothesis = content.split("Hypothesis:")[1].strip()
+        else:
+            skipped += 1
+            continue
+
+        prompt = make_prompt(premise, hypothesis)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(device)
+
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=20,
+                eos_token_id=tokenizer.eos_token_id,
+                do_sample=False
+            )
+        decoded = tokenizer.decode(output[0], skip_special_tokens=True)
+
+        pred = extract_label(decoded)
+
+        if pred == true_label:
+            correct += 1
+        if pred in ["entailment", "non_entailment"]:
+            total += 1
+
+        results.append({
+            "index": i,
+            "premise": premise,
+            "hypothesis": hypothesis,
+            "true_label": true_label,
+            "predicted_label": pred,
+            "raw_output": decoded
+        })
+
+        print(f"[{i}] Pred: {pred} | True: {true_label}")
+        print(decoded + "\n")
+
+    except Exception as e:
+        skipped += 1
+        print(f"Error at index {i}: {e}")
+
+accuracy = correct / total if total else 0
+print(f"\nZero-Shot Accuracy on HANS ({total} matched, {skipped} skipped): {accuracy:.2%}")
+
+with open(json_filename, "w") as fw:
+    json.dump({
+        "accuracy": accuracy,
+        "matched": total,
+        "skipped": skipped,
+        "results": results
+    }, fw, indent=2)
+
+print(f"Results JSON {json_filename}")
+print(f"Logs  {log_filename}")
