@@ -1,0 +1,102 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import sys
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_mnli_{timestamp}.json"
+log_filename = f"{result_dir}/log_mnli_{timestamp}.txt"
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+log_file = open(log_filename, "w")
+sys.stdout = Tee(sys.stdout, log_file)
+
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}, CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+     model_name,
+     torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device)
+model.eval()
+print("Model loaded")
+
+with open("CAL/data/mnli_sampled/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+def make_prompt(premise, hypothesis):
+    return f"Premise: {premise}\nHypothesis: {hypothesis}\nIs this entailment, contradiction, or neutral? Give a concise answer."
+
+label_map = {
+    0: "entailment",
+    1: "neutral",
+    2: "contradiction"
+}
+
+correct = 0
+total = 0
+results = []
+
+for i, example in enumerate(tqdm(lines)):
+    prompt = make_prompt(example["premise"], example["hypothesis"])
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=20)
+        decoded = tokenizer.decode(output[0], skip_special_tokens=True).lower()
+        response = decoded[len(prompt):].strip()
+
+    if "entailment" in response and "contradiction" not in response:
+        pred = "entailment"
+    elif "contradiction" in response:
+        pred = "contradiction"
+    elif "neutral" in response:
+        pred = "neutral"
+    else:
+        pred = "unknown"
+
+    true_label = label_map[example["label"]]
+
+    if pred == true_label:
+        correct += 1
+    if pred in ["entailment", "neutral", "contradiction"]:
+        total += 1
+
+    print(f"[{i}] Prediction: {pred} | True: {true_label}")
+    print(f"Raw Output: {decoded}")
+
+    
+    results.append({
+        "index": i,
+        "premise": example["premise"],
+        "hypothesis": example["hypothesis"],
+        "true_label": true_label,
+        "predicted_label": pred,
+        "raw_output": decoded
+    })
+
+accuracy = correct / total if total > 0 else 0
+print(f"\nAccuracy of ZS on MNLI ({total} matched): {accuracy:.2%}")
+
+
+with open(json_filename, "w") as f:
+    json.dump(results, f, indent=2)
+
+print(f"Results saved to: {json_filename}")
