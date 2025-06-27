@@ -1,0 +1,240 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import sys
+import re
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_chatbot_fewshot_{timestamp}.json"
+log_filename = f"{result_dir}/log_chatbot_fewshot_{timestamp}.txt"
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+log_file = open(log_filename, "w")
+sys.stdout = Tee(sys.stdout, log_file)
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+with open("CAL/data/chatbot/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+def normalize_label(label):
+    """Normalize labels to consistent format"""
+    if isinstance(label, str):
+        label = label.upper().strip()
+        if label in ['MODEL_A', 'A']:
+            return 'A'
+        elif label in ['MODEL_B', 'B']:
+            return 'B'
+        elif label in ['TIE', 'BOTH', 'EQUAL']:
+            return 'TIE'
+    return label
+
+def make_prompt(example):
+    """Create a structured prompt for judge evaluation with balanced examples"""
+    
+    
+    instruction = """Judge which AI response better answers the user's question. Consider helpfulness, accuracy, and completeness.
+
+Output format: Just write A, B, or TIE"""
+
+    
+    examples_text = f"""
+User: What's the weather like today?
+Response A: It's sunny and 75°F with light winds.
+Response B: I don't have current weather data.
+Better: A
+
+User: Write a Python function to reverse a string.
+Response A: I can't help with coding.
+Response B: def reverse_string(s): return s[::-1]
+Better: B
+
+User: What is 2+2?
+Response A: The answer is 4.
+Response B: 2 plus 2 equals 4.
+Better: TIE
+
+User: {example['q']}
+Response A: {example['a']}
+Response B: {example['b']}
+Better:"""
+
+    return instruction + examples_text
+
+def extract_prediction(text):
+    """Improved prediction extraction with multiple fallback methods"""
+    
+   
+    text = text.strip().upper()
+    
+    
+    if text.startswith('A'):
+        return 'A'
+    elif text.startswith('B'):
+        return 'B'
+    elif text.startswith('TIE'):
+        return 'TIE'
+    
+    
+    if re.search(r'\b(RESPONSE|ASSISTANT|OPTION)\s*A\b', text):
+        return 'A'
+    elif re.search(r'\b(RESPONSE|ASSISTANT|OPTION)\s*B\b', text):
+        return 'B'
+    
+    
+    matches = re.findall(r'\b(A|B|TIE)\b', text)
+    if matches:
+        return matches[0]  
+    
+    
+    better_match = re.search(r'\b(BETTER|WINNER|CHOOSE)\s*(IS\s*)?(A|B|TIE)\b', text)
+    if better_match:
+        return better_match.group(3)
+    
+    return "INVALID"
+
+results = []
+skipped = 0
+
+print(f"Processing {min(50, len(lines))} examples...")
+
+for i, example in enumerate(tqdm(lines)):
+    try:
+       
+        prompt_text = make_prompt(example)
+        
+       
+        inputs = tokenizer(
+            prompt_text, 
+            return_tensors="pt", 
+            truncation=True, 
+            max_length=3072,  
+            padding=True
+        ).to(device)
+        
+        
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=5,   
+                do_sample=True,     
+                temperature=0.3,    
+                top_p=0.9,         
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                repetition_penalty=1.0, 
+                no_repeat_ngram_size=0  
+            )
+        
+        
+        generated_tokens = output[0][inputs['input_ids'].shape[1]:]
+        response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+        
+        print(f"\n[{i}] Question: {example['q'][:100]}...")
+        print(f"Raw Output: '{response_text}'")
+        
+  
+        pred = extract_prediction(response_text)
+        print(f"Predicted: {pred}, True: {example.get('judge', 'Unknown')}")
+        
+       
+        true_label = normalize_label(example.get("judge", "Unknown"))
+        
+        results.append({
+            "index": example.get("index", i),
+            "user_question": example["q"],
+            "response_a": example["a"],
+            "response_b": example["b"],
+            "true_judge": true_label,
+            "predicted_judge": pred,
+            "raw_output": response_text,
+            "original_true_label": example.get("judge", "Unknown")  # Keep original for debugging
+        })
+
+    except Exception as e:
+        print(f"Error at index {i}: {e}")
+        skipped += 1
+        continue
+
+
+valid_results = [r for r in results if r["predicted_judge"] in ["A", "B", "TIE"]]
+correct = sum(1 for r in valid_results if r["true_judge"] == r["predicted_judge"])
+total = len(valid_results)
+
+accuracy = correct / total if total > 0 else 0
+
+print(f"\n" + "="*50)
+print(f"EVALUATION RESULTS")
+print(f"="*50)
+print(f"Total examples processed: {len(results)}")
+print(f"Valid predictions: {total}")
+print(f"Correct predictions: {correct}")
+print(f"Accuracy: {accuracy:.2%}")
+print(f"Skipped examples: {skipped}")
+
+
+pred_counts = {}
+for r in results:
+    pred = r["predicted_judge"]
+    pred_counts[pred] = pred_counts.get(pred, 0) + 1
+
+print(f"\nPrediction distribution:")
+for pred, count in sorted(pred_counts.items()):
+    print(f"  {pred}: {count}")
+
+
+print(f"\nFirst 10 examples (detailed):")
+for i, r in enumerate(results[:10]):
+    print(f"{i+1}. True: {r['true_judge']} (orig: {r['original_true_label']}), Pred: {r['predicted_judge']}")
+    print(f"   Raw: '{r['raw_output']}'")
+    print(f"   Question: {r['user_question'][:60]}...")
+    print(f"   Response A: {r['response_a'][:60]}...")
+    print(f"   Response B: {r['response_b'][:60]}...")
+    print()
+
+
+output_data = {
+    "accuracy": accuracy,
+    "total_examples": len(results),
+    "valid_predictions": total,
+    "correct_predictions": correct,
+    "skipped": skipped,
+    "prediction_distribution": pred_counts,
+    "results": results
+}
+
+with open(json_filename, "w") as f:
+    json.dump(output_data, f, indent=2)
+
+print(f"\nResults saved to:")
+print(f" JSON: {json_filename}")
+print(f" Log: {log_filename}")
+
+log_file.close()
