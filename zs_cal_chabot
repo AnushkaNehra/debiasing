@@ -1,0 +1,141 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import re
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
+
+# Setup output directory and filenames
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_zscal_chatbot_{timestamp}.json"
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+with open("CAL/data/chatbot/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+def normalize_label(label):
+    if isinstance(label, str):
+        label = label.upper().strip()
+        if label in ['MODEL_A', 'A']:
+            return 'A'
+        elif label in ['MODEL_B', 'B']:
+            return 'B'
+        elif label in ['TIE', 'BOTH', 'EQUAL']:
+            return 'TIE'
+    return label
+
+def make_prompt(example):
+    return f"""Which response better answers the question?
+
+Question: {example['q']}
+
+Response A: {example['a']}
+
+Response B: {example['b']}
+
+Better response (A/B/TIE):"""
+
+def extract_prediction(text):
+    text = text.strip().upper()
+    
+    # Look for A, B, or TIE at the start
+    if text.startswith('A'):
+        return 'A'
+    elif text.startswith('B'):
+        return 'B'
+    elif text.startswith('TIE'):
+        return 'TIE'
+    
+    # Look for last occurrence of A, B, or TIE
+    matches = re.findall(r'\b(A|B|TIE)\b', text)
+    if matches:
+        return matches[-1]
+    
+    return "INVALID"
+
+results = []
+correct = 0
+total = 0
+
+print(f"Processing {min(50, len(lines))} examples...")
+
+for i, example in enumerate(tqdm(lines)):
+    try:
+        prompt_text = make_prompt(example)
+        
+        inputs = tokenizer(
+            prompt_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048,
+            padding=True
+        ).to(device)
+        
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=10,
+                do_sample=True,
+                temperature=0.1,
+                top_p=0.95,
+                pad_token_id=tokenizer.eos_token_id
+            )
+        
+        generated_tokens = output[0][inputs['input_ids'].shape[1]:]
+        response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+        
+        pred = extract_prediction(response_text)
+        true_label = normalize_label(example.get("judge", "Unknown"))
+        
+        if pred in ["A", "B", "TIE"]:
+            total += 1
+            if pred == true_label:
+                correct += 1
+        
+        results.append({
+            "index": example.get("index", i),
+            "user_question": example["q"],
+            "response_a": example["a"],
+            "response_b": example["b"],
+            "true_judge": true_label,
+            "predicted_judge": pred,
+            "raw_output": response_text
+        })
+        
+    except Exception as e:
+        print(f"Error at index {i}: {e}")
+        continue
+
+accuracy = correct / total if total > 0 else 0
+print(f"\nZero-Shot CAL Accuracy: {accuracy:.2%} ({correct}/{total})")
+
+# Save results to JSON file
+output_data = {
+    "method": "Zero-Shot CAL",
+    "accuracy": accuracy,
+    "correct_predictions": correct,
+    "total_valid_predictions": total,
+    "total_examples": len(results),
+    "timestamp": timestamp,
+    "results": results
+}
+
+with open(json_filename, "w") as f:
+    json.dump(output_data, f, indent=2)
+
+print(f"Results saved to: {json_filename}")
