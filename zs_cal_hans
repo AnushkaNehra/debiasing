@@ -1,0 +1,118 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import sys
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_hans_zs_cal_{timestamp}.json"
+log_filename = f"{result_dir}/log_hans_zs_cal_{timestamp}.txt"
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+log_file = open(log_filename, "w")
+sys.stdout = Tee(sys.stdout, log_file)
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+with open("CAL/data/HANS_sampled/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+def make_cal_prompt(premise, hypothesis, rationale):
+    return f"[INST] Given the following premise and hypothesis, determine whether the hypothesis logically follows from the premise. Use the rationale to make your decision.\nPremise: {premise}\nHypothesis: {hypothesis}\nRationale: {rationale}\nAnswer with only one word: entailment or non_entailment. [/INST]"
+
+correct = 0
+total = 0
+skipped = 0
+results = []
+
+for i, example in enumerate(tqdm(lines)):
+    try:
+        content = example["content"]
+        rationale = example.get("rationale", "").strip()
+        
+        if "Premise:" in content and "Hypothesis:" in content:
+            premise_part, hypothesis_part = content.split("Hypothesis:", 1)
+            premise = premise_part.replace("Premise:", "").strip()
+            hypothesis = hypothesis_part.strip()
+        else:
+            skipped += 1
+            continue
+
+        label = example["label"]
+        true_label = label.strip().lower() if isinstance(label, str) else ("entailment" if label == 0 else "non_entailment")
+
+        prompt = make_cal_prompt(premise, hypothesis, rationale)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(device)
+
+        with torch.no_grad():
+            output = model.generate(**inputs, max_new_tokens=10)
+            decoded = tokenizer.decode(output[0], skip_special_tokens=True).lower()
+            response = decoded[len(prompt):].strip().split()[0]
+
+        if "non_entailment" in response or "non" in response:
+            pred = "non_entailment"
+        elif "entailment" in response:
+            pred = "entailment"
+        else:
+            pred = "unknown"
+
+        if pred == true_label:
+            correct += 1
+        if pred in ["entailment", "non_entailment"]:
+            total += 1
+
+        results.append({
+            "index": i,
+            "premise": premise,
+            "hypothesis": hypothesis,
+            "rationale": rationale,
+            "true_label": true_label,
+            "prediction": pred,
+            "raw_output": decoded
+        })
+
+        print(f"\n[{i}] Prediction: {pred} | True: {true_label}")
+        print(f"Raw Output: {decoded}")
+
+    except Exception as e:
+        print(f"Error at index {i}: {e}")
+        skipped += 1
+        continue
+
+accuracy = correct / total if total > 0 else 0
+print(f"\nZS-CAL Accuracy on HANS ({total} matched): {accuracy:.2%}")
+print(f"Skipped: {skipped} examples")
+
+with open(json_filename, "w") as f:
+    json.dump({
+        "accuracy": accuracy,
+        "matched": total,
+        "skipped": skipped,
+        "results": results
+    }, f, indent=2)
+
+print(f"\nResults saved to:")
+print(f" JSON: {json_filename}")
+print(f" Log: {log_filename}")
