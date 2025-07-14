@@ -1,0 +1,78 @@
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from trl import DPOTrainer
+from trl.trainer import DPOConfig
+from datasets import load_dataset
+import torch
+import wandb
+import os
+
+# 1. Init wandb
+wandb.init(
+    project="mnli-dpo",
+    name="llama2-mnli-dpo-zero-shot-filtered",
+    config={
+        "model": "LLaMA2-7B",
+        "batch_size": 1,
+        "epochs": 1,
+        "learning_rate": 5e-7,
+        "gradient_accumulation": 4
+    }
+)
+
+#  Use already cleaned dataset
+dataset = load_dataset("json", data_files="CAL/data/cleaned_filtered_dataset.jsonl", split="train")
+
+#  No preprocessing needed — data is already flattened and has rewards
+
+# Load tokenizer and model
+model_name = "meta-llama/Llama-2-7b-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map="auto",
+    trust_remote_code=True
+)
+
+# Training config
+output_dir = "checkpoints/llama2-dpo-zeroshot-filtered"
+os.makedirs(output_dir, exist_ok=True)
+
+config = DPOConfig(
+    output_dir=output_dir,
+    per_device_train_batch_size=1,
+    per_device_eval_batch_size=1,
+    gradient_accumulation_steps=4,
+    num_train_epochs=1,
+    logging_steps=10,
+    learning_rate=5e-7,
+    warmup_ratio=0.03,
+    lr_scheduler_type="cosine",
+    optim="adamw_torch",
+    bf16=True,
+    remove_unused_columns=False,
+    report_to=["wandb"],
+    max_prompt_length=512,
+    max_length=1024,
+    beta=0.1,
+    padding_value=tokenizer.pad_token_id,
+)
+
+# Train the model
+trainer = DPOTrainer(
+    model=model,
+    ref_model=None,
+    args=config,
+    train_dataset=dataset,
+    eval_dataset=None
+)
+
+trainer.train()
+
+# Save outputs
+trainer.save_model(output_dir)
+tokenizer.save_pretrained(output_dir)
+
+wandb.finish()
+
