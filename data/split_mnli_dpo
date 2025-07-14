@@ -1,0 +1,21 @@
+import json
+from sklearn.model_selection import train_test_split
+
+input_file = "CAL/data/mnli_dpo_format.jsonl"
+train_file = "CAL/data/mnli_dpo_train.jsonl"
+eval_file = "CAL/data/mnli_dpo_eval.jsonl"
+with open(input_file, "r") as f:
+    lines = [json.loads(line) for line in f]
+
+train_lines, eval_lines = train_test_split(lines, test_size=0.1, random_state=42)
+
+with open(train_file, "w") as f:
+    for line in train_lines:
+        f.write(json.dumps(line) + "\n")
+
+
+with open(eval_file, "w") as f:
+    for line in eval_lines:
+        f.write(json.dumps(line) + "\n")
+
+print(f"Train samples: {len(train_lines)}, Eval samples: {len(eval_lines)}")
