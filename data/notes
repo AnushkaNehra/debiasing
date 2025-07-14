@@ -1,0 +1,4 @@
+mnli_samples-->dpo_trainer.py (this file) has put the mnli data in the dpo format 
+there is little to no need of imput,trian and ecal file to be slit and its in the file split_mnli_dpo
+correct data file has put the dpo format mnli file into the mnli file into dpo with margin format 
+correct_data file is converting the data to the original raw and flattened data i am working on rn , it takes the mnli_dpo_format as i/p and then the mnli_dpo_margin format as o/p and then flatten the data file and name it as cleaned_filtered_dataset and this is the one being currently used and is helpful 
