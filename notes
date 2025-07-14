@@ -1,0 +1,107 @@
+## CAL Project
+## working on  Python code via a Linux terminal inside VS Code (not directly through the VS Code UI)
+1. pip install -r cuda12_requirements.txt
+2. Prepare models and datasets.
+3. Reproduce table I.
+
+
+```sh
+CUDA_VISIBLE_DEVICES=4,5,6,7 python CAL/zs_hans.py   seeing if cuda is available to give GPU and what is the devices on GPU available 
+```
+4. mark the label with number and then convert them to string not prior to the labeling 
+
+5. skip or ignore the bad examples and then put the checkbox in the loop itself and there is no need for its definition 
+
+6. use the prompts from the paper and not ur own , directly copy paste it from the paper itself , this yields better results 
+
+7. also acc to prompts it may have either a single line command or double line command .
+
+8. this is for saving the files according to timestamp for refernce :
+
+from datetime import datetime
+import os
+import sys
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_mnli_{timestamp}.json"
+log_filename = f"{result_dir}/log_mnli_{timestamp}.txt"
+
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+log_file = open(log_filename, "w")
+sys.stdout = Tee(sys.stdout, log_file)
+
+
+## trl path:
+```
+/home/anushka/llm/trl/trl/trainer/dpo_config.py
+```
+trl->trl->trainer->dpo-config
+
+
+## For running the sh llm harness model for evaluation #
+
+anushka@anushka:~/llm$ cd CAL/
+anushka@anushka:~/llm/CAL$ touch eval_script.sh
+anushka@anushka:~/llm/CAL$ source ~/llm/.llm/bin/activate
+(.llm) anushka@anushka:~/llm/CAL$ sh eval_script.sh 
+
+## RESULTS
+1)--->Running loglikelihood requests: 100%|███████████████████████████████████████████████████████████████████████| 29445/29445 [23:12<00:00, 21.14it/s]
+2025-07-07:16:28:46 INFO     [loggers.evaluation_tracker:280] Output path not provided, skipping saving results aggregated
+hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo/,trust_remote_code=True,local_files_only=True), gen_kwargs: (None), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|Filter|n-shot|Metric|   |Value |   |Stderr|
+|-----|------:|------|-----:|------|---|-----:|---|-----:|
+|mnli |      1|none  |     0|acc   |↑  |0.4936|±  | 0.005|
+
+-> this one is for the mnli_dpo_zs
+
+
+2)---->
+-> this one is for the mnli_dpo_margin
+Running loglikelihood requests: 100%|███████████████████████████████████████████████████████████████████████| 29445/29445 [23:06<00:00, 21.24it/s]
+2025-07-07:17:08:13 INFO     [loggers.evaluation_tracker:280] Output path not provided, skipping saving results aggregated
+hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo-margin/,trust_remote_code=True,local_files_only=True), gen_kwargs: (None), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|Filter|n-shot|Metric|   |Value |   |Stderr|
+|-----|------:|------|-----:|------|---|-----:|---|-----:|
+|mnli |      1|none  |     0|acc   |↑  |0.4936|±  | 0.005|
+
+
+
+## new and better result 
+Running loglikelihood requests: 100%|███████████████████████████████████████████████████████████████████████| 29445/29445 [31:00<00:00, 15.82it/s]
+2025-07-08:17:39:28 INFO     [loggers.evaluation_tracker:280] Output path not provided, skipping saving results aggregated
+hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo-margin/,trust_remote_code=True,local_files_only=True), gen_kwargs: (None), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|Filter|n-shot|Metric|   |Value |   |Stderr|
+|-----|------:|------|-----:|------|---|-----:|---|-----:|
+|mnli |      1|none  |     0|acc   |↑  |0.4929|±  | 0.005|
+
+
+Running loglikelihood requests: 100%|███████████████████████████████████████████████████████████████████████| 29445/29445 [30:52<00:00, 15.89it/s]
+2025-07-10:14:06:34 INFO     [loggers.evaluation_tracker:280] Output path not provided, skipping saving results aggregated
+hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo-margin/,trust_remote_code=True,local_files_only=True), gen_kwargs: (None), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|Filter|n-shot|Metric|   |Value |   |Stderr|
+|-----|------:|------|-----:|------|---|-----:|---|-----:|
+|mnli |      1|none  |     0|acc   |↑  |0.4929|±  | 0.005|
+
+
+## after correcting dataset 
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████| 9815/9815 [00:00<00:00, 60616.33it/s]
+2025-07-11:17:16:11 INFO     [evaluator:560] Running loglikelihood requests
+Running loglikelihood requests: 100%|███████████████████████████████████████████████████████████████████████| 29445/29445 [31:51<00:00, 15.40it/s]
+2025-07-11:17:48:59 INFO     [loggers.evaluation_tracker:280] Output path not provided, skipping saving results aggregated
+hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo/,trust_remote_code=True,local_files_only=True), gen_kwargs: (None), limit: None, num_fewshot: None, batch_size: 1
+|Tasks|Version|Filter|n-shot|Metric|   |Value |   |Stderr|
+|-----|------:|------|-----:|------|---|-----:|---|-----:|
+|mnli |      1|none  |     0|acc   |↑  |0.4933|±  | 0.005|
