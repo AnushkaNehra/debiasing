@@ -1,0 +1,147 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import sys
+
+# ========== Setup ==========
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_fs_cal_mnli_{timestamp}.json"
+log_filename = f"{result_dir}/log_fs_cal_mnli_{timestamp}.txt"
+
+class Tee:
+    def __init__(self, *files):
+        self.files = files
+    def write(self, obj):
+        for f in self.files:
+            f.write(obj)
+            f.flush()
+    def flush(self):
+        for f in self.files:
+            f.flush()
+
+log_file = open(log_filename, "w")
+sys.stdout = Tee(sys.stdout, log_file)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer.pad_token = tokenizer.eos_token
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+with open("CAL/data/mnli_sampled/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+# Few-shot examples with rationales (CAL-style)
+few_shot_examples = [
+    {
+        "premise": "A soccer game with multiple males playing.",
+        "hypothesis": "Some men are playing a sport.",
+        "label": "entailment",
+        "rationale": "The premise mentions males playing a soccer game, which is a sport. The hypothesis generalizes this correctly."
+    },
+    {
+        "premise": "A man is jumping into an empty pool.",
+        "hypothesis": "There is water in the pool.",
+        "label": "contradiction",
+        "rationale": "The premise explicitly states the pool is empty, while the hypothesis assumes there is water, which directly contradicts the premise."
+    },
+    {
+        "premise": "A man is playing a guitar.",
+        "hypothesis": "A man is playing music.",
+        "label": "entailment",
+        "rationale": "Playing a guitar typically produces music, so the hypothesis logically follows."
+    }
+]
+
+# Prompt builder with rationale
+def make_cal_prompt(fewshots, premise, hypothesis, rationale):
+    prompt = "You are a natural language inference system.\n"
+    prompt += "Determine whether the hypothesis logically follows from the premise. Choose from: entailment, contradiction, or neutral.\n"
+    prompt += "Each example includes a rationale. Use the rationale to make a better decision.\n\n"
+
+    for ex in fewshots:
+        prompt += f"Premise: {ex['premise']}\nHypothesis: {ex['hypothesis']}\nRationale: {ex['rationale']}\nAnswer: {ex['label']}\n\n"
+
+    prompt += f"Premise: {premise}\nHypothesis: {hypothesis}\nRationale: {rationale}\nAnswer:"
+    return prompt
+
+label_map = {
+    0: "entailment",
+    1: "neutral",
+    2: "contradiction"
+}
+
+results = []
+correct = 0
+total = 0
+
+for i, example in enumerate(tqdm(lines)):
+    premise = example["premise"]
+    hypothesis = example["hypothesis"]
+    true_label = label_map[example["label"]]
+    rationale = example.get("rationale", "").strip()
+
+    prompt = make_cal_prompt(few_shot_examples, premise, hypothesis, rationale)
+
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, padding=True).to(device)
+
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=10)
+        generated_tokens = output[0][inputs["input_ids"].shape[-1]:]
+        decoded = tokenizer.decode(generated_tokens, skip_special_tokens=True).lower().strip()
+
+# Extract label
+    if "entailment" in decoded and "contradiction" not in decoded and "neutral" not in decoded:
+        pred = "entailment"
+    elif "contradiction" in decoded:
+        pred = "contradiction"
+    elif "neutral" in decoded:
+        pred = "neutral"
+    else:
+        pred = "unknown"
+
+
+    # Evaluation
+    if pred == true_label:
+        correct += 1
+    if pred in ["entailment", "neutral", "contradiction"]:
+        total += 1
+
+    results.append({
+        "index": i,
+        "premise": premise,
+        "hypothesis": hypothesis,
+        "rationale": rationale,
+        "true_label": true_label,
+        "predicted_label": pred,
+        "raw_output": decoded
+    })
+
+    print(f"\n[{i}] Prediction: {pred} | True: {true_label}")
+    print(f"Raw Output: {decoded}")
+
+# Final Accuracy
+accuracy = correct / total if total > 0 else 0
+print(f"\nFew-Shot CAL Accuracy on MNLI ({total} matched): {accuracy:.2%}")
+
+# Save
+with open(json_filename, "w") as f:
+    json.dump({
+        "accuracy": accuracy,
+        "correct": correct,
+        "total": total,
+        "results": results
+    }, f, indent=2)
+
+print(f"Results saved to:\n JSON: {json_filename}\n LOG: {log_filename}")
+log_file.close()
