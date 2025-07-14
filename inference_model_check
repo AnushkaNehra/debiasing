@@ -1,0 +1,24 @@
+export CUDA_VISIBLE_DEVICES=7
+
+#lm_eval --model hf \
+#--model_args pretrained=Qwen/Qwen2-0.5B-Instruct \
+#--tasks bbq \
+#--device cuda:0 \
+#--batch_size 8
+
+
+##PATH for mnli_dpo_zs
+
+#lm_eval --model hf \
+#--model_args pretrained=/home/anushka/llm/checkpoints/llama2-dpo/,trust_remote_code=True,local_files_only=True \
+#--tasks mnli \
+#--device cuda:0 \
+#--batch_size 1
+
+##PATH for mnli_dpo_margin
+
+lm_eval --model hf \
+--model_args pretrained=/home/anushka/llm/checkpoints/llama2-dpo-margin/,trust_remote_code=True,local_files_only=True \
+--tasks mnli \
+--device cuda:0 \
+--batch_size 1
