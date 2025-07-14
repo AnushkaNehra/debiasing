@@ -1,0 +1,19 @@
+from datasets import load_dataset
+import json
+
+dataset = load_dataset("json", data_files="CAL/data/filtered_dataset.jsonl", split="train")
+
+def flatten_and_add_rewards(example):
+    if isinstance(example["chosen"], dict):
+        example["chosen_score"] = example["chosen"]["score"]
+        example["rejected_score"] = example["rejected"]["score"]
+        example["chosen"] = example["chosen"]["text"]
+        example["rejected"] = example["rejected"]["text"]
+    example["rewards"] = {
+        "chosen": example["chosen_score"],
+        "rejected": example["rejected_score"]
+    }
+    return example
+
+flattened = dataset.map(flatten_and_add_rewards)
+flattened.to_json("CAL/data/cleaned_filtered_dataset.jsonl")
