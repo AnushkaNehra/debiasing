@@ -1,0 +1,41 @@
+import json
+
+input_path = "CAL/data/mnli_dpo_format.jsonl"
+output_path = "CAL/data/mnli_dpo_margin_format.jsonl"
+
+label_scores = {
+    "entailment": 0.7,
+    "neutral": 0.9,
+    "contradiction": 0.5
+}
+MARGIN = 0.05
+
+with open(input_path) as f:
+    data = [json.loads(line) for line in f]
+
+updated = []
+for ex in data:
+    chosen_label = ex["chosen"]
+    rejected_label = ex["rejected"]
+
+    r_c = label_scores.get(chosen_label, 0.6)
+    r_r = label_scores.get(rejected_label, 0.6)
+
+    if r_c <= r_r:
+        r_c = round(r_r + MARGIN, 3)
+
+    updated.append({
+        "prompt": ex["prompt"],
+        "chosen": {
+            "text": chosen_label,
+            "score": r_c
+        },
+        "rejected": {
+            "text": rejected_label,
+            "score": r_r
+        }
+    })
+
+with open(output_path, "w") as f:
+    for ex in updated:
+        f.write(json.dumps(ex) + "\n")
