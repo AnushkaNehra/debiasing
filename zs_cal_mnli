@@ -1,0 +1,125 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+import json
+from tqdm import tqdm
+from datetime import datetime
+import os
+import re
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
+
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+result_dir = "outputs"
+os.makedirs(result_dir, exist_ok=True)
+json_filename = f"{result_dir}/results_zscal_mnli_{timestamp}.json"
+
+model_name = "meta-llama/Llama-2-7b-chat-hf"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.float16 if device == "cuda" else torch.float32
+).to(device).eval()
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+with open("CAL/data/mnli_sampled/sampled.jsonl", "r") as f:
+    lines = [json.loads(line) for line in f]
+
+def normalize_label(label):
+    if isinstance(label, int):
+        return {0: "ENTAILMENT", 1: "NEUTRAL", 2: "CONTRADICTION"}[label]
+    return label.upper().strip()
+
+def make_prompt(premise, hypothesis):
+    return f"""What is the relationship between these sentences?
+########
+Sentence 1: {premise}
+########
+Sentence 2: {hypothesis}
+########
+Give the direct answer, e.g., ENTAILMENT, NEUTRAL, or CONTRADICTION)."""
+
+def extract_prediction(text):
+    text = text.strip().upper()
+    print(f'text: {text}')
+    if text.startswith('ENTAILMENT'):
+        return 'ENTAILMENT'
+    elif text.startswith('NEUTRAL'):
+        return 'NEUTRAL'
+    elif text.startswith('CONTRADICTION'):
+        return 'CONTRADICTION'
+    
+    matches = re.findall(r'\b(ENTAILMENT|NEUTRAL|CONTRADICTION)\b', text)
+    if matches:
+        return matches[-1]
+    # print(f'Mismatched: {text}')
+    return "INVALID"
+
+results = []
+correct = 0
+total = 0
+
+print(f"Processing {min(10, len(lines))} examples...")
+
+for i, example in enumerate(tqdm(lines[:10])):
+    try:
+        prompt_text = make_prompt(example["premise"], example["hypothesis"])
+        
+        inputs = tokenizer(
+            prompt_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024,
+            padding=True
+        ).to(device)
+        
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=125,
+                do_sample=True,
+                temperature=0.1,
+                top_p=0.95,
+                pad_token_id=tokenizer.eos_token_id
+            )
+        
+        generated_tokens = output[0][inputs['input_ids'].shape[1]:]
+        response_text = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+        
+        pred = extract_prediction(response_text)
+        true_label = normalize_label(example.get("label", "Unknown"))
+        
+        if pred in ["ENTAILMENT", "NEUTRAL", "CONTRADICTION"]:
+            total += 1
+            if pred == true_label:
+                correct += 1
+        
+        results.append({
+            "index": i,
+            "premise": example["premise"],
+            "hypothesis": example["hypothesis"],
+            "true_label": true_label,
+            "predicted_label": pred,
+            "raw_output": response_text
+        })
+        
+        print(f"[{i}] Pred: {pred} | True: {true_label} | Match: {pred == true_label}")
+        
+    except Exception as e:
+        print(f"Error at index {i}: {e}")
+        continue
+
+accuracy = correct / total if total > 0 else 0
+print(f"\nZS-CAL MNLI Accuracy: {accuracy:.2%} ({correct}/{total})")
+
+with open(json_filename, "w") as f:
+    json.dump({
+        "accuracy": accuracy,
+        "correct": correct,
+        "total": total,
+        "results": results
+    }, f, indent=2)
+
+print(f"Results saved to: {json_filename}")
