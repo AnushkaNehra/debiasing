@@ -1,0 +1,37 @@
+import json
+import random
+
+input_file = "CAL/data/mnli_sampled/sampled.jsonl"   # Your source MNLI file
+output_file = "CAL/data/mnli_dpo_format.jsonl"       # Your target DPO training file
+
+label_map = {
+    0: "entailment",
+    1: "neutral",
+    2: "contradiction"
+}
+
+def make_prompt(premise, hypothesis):
+    return f"Premise: {premise}\nHypothesis: {hypothesis}\nIs this entailment, contradiction, or neutral? Give a concise answer."
+
+with open(input_file, "r") as f:
+    lines = [json.loads(line) for line in f]
+
+output_lines = []
+
+for ex in lines:
+    true_label = label_map[ex["label"]]
+    wrong_labels = [label for label in ["entailment", "neutral", "contradiction"] if label != true_label]
+    rejected_label = random.choice(wrong_labels)
+
+    example = {
+        "prompt": make_prompt(ex["premise"], ex["hypothesis"]),
+        "chosen": true_label,
+        "rejected": rejected_label
+    }
+    output_lines.append(example)
+
+with open(output_file, "w") as f:
+    for line in output_lines:
+        f.write(json.dumps(line) + "\n")
+
+print(f"Converted {len(output_lines)} examples to DPO format at {output_file}")
