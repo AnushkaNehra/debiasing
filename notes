@@ -96,7 +96,7 @@ hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo-margin/,trust_remote_cod
 |mnli |      1|none  |     0|acc   |↑  |0.4929|±  | 0.005|
 
 
-## after correcting dataset 
+## after correcting dataset and this is with margin 0.05
 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████| 9815/9815 [00:00<00:00, 60616.33it/s]
 2025-07-11:17:16:11 INFO     [evaluator:560] Running loglikelihood requests
 Running loglikelihood requests: 100%|███████████████████████████████████████████████████████████████████████| 29445/29445 [31:51<00:00, 15.40it/s]
@@ -105,3 +105,7 @@ hf (pretrained=/home/anushka/llm/checkpoints/llama2-dpo/,trust_remote_code=True,
 |Tasks|Version|Filter|n-shot|Metric|   |Value |   |Stderr|
 |-----|------:|------|-----:|------|---|-----:|---|-----:|
 |mnli |      1|none  |     0|acc   |↑  |0.4933|±  | 0.005|
+
+
+
+and after the margin 0.1
